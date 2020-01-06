@@ -1,10 +1,14 @@
 import socket
 import time
+import math
+import textwrap
+import sys
 
 def parse_irc_packet(packet):
     irc_packet = IRCPacket()
     irc_packet.parse(packet)
     return irc_packet
+
 
 class IRCPacket:
     def __init__(self):
@@ -36,6 +40,7 @@ class IRCPacket:
         else:
             self.command = packet
 
+
 class IRCConnection:
     def __init__(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -52,7 +57,7 @@ class IRCConnection:
         self.on_leave = []
 
     def run_once(self):
-        packet = parse_irc_packet(next(self.lines)) #Get next line from generator
+        packet = parse_irc_packet(next(self.lines))  # Get next line from generator
 
         for event_handler in list(self.on_packet_received):
             event_handler(self, packet)
@@ -63,15 +68,15 @@ class IRCConnection:
                     event_handler(self, packet.arguments[0], packet.prefix.split("!")[0], packet.arguments[1])
             else:
                 for event_handler in list(self.on_private_message):
-                    event_handler(self, packet.prefix.split("!")[0], packet.arguments[1])
+                    event_handler(self, packet.arguments[0], packet.arguments[1])
         elif packet.command == "PING":
             self.send_line("PONG :{}".format(packet.arguments[0]))
 
             for event_handler in list(self.on_ping):
                 event_handler(self)
         elif packet.command == "433" or packet.command == "437":
-            #Command 433 is "Nick in use"
-            #Add underscore to the nick
+            # Command 433 is "Nick in use"
+            # Add underscore to the nick
 
             self.set_nick("{}_".format(self.nick))
         elif packet.command == "001":
@@ -106,11 +111,35 @@ class IRCConnection:
     def send_line(self, line):
         self.socket.send("{}\r\n".format(line).encode("utf-8"))
 
-    def send_message(self, to, message):
-        self.send_line("PRIVMSG {} :{}".format(to, message))
+    def byte_text_warp(self, text, size, break_long_words=True):
+        """Similar to textwrap.wrap(), but considers the size of strings (in bytes)
+        instead of their length (in characters)."""
+        try:
+            words = textwrap.TextWrapper()._split_chunks(text)
+        except AttributeError:  # Python 2
+            words = textwrap.TextWrapper()._split(text)
+        words.reverse()  # use it as a stack
+        if sys.version_info[0] >= 3:
+            words = [w.encode() for w in words]
+        lines = [b'']
+        while words:
+            word = words.pop(-1)
+            if len(word) > size:
+                words.append(word[size:])
+                word = word[0:size]
+            if len(lines[-1]) + len(word) <= size:
+                lines[-1] += word
+            else:
+                lines.append(word)
+        if sys.version_info[0] >= 3:
+            return [l.decode() for l in lines]
+        else:
+            return lines
 
-    def send_notice(self, to, message):
-        self.send_line("NOTICE {} :{}".format(to, message))
+    def send_message(self, to, message):
+        msgs = self.byte_text_warp(message, 450, break_long_words=False)
+        for msg in msgs:
+            self.send_line("PRIVMSG {} :{}".format(to, msg))
 
     def send_action_message(self, to, action):
         self.send_message(to, "\x01ACTION {}\x01".format(action))
